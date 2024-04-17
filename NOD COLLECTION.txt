@@ -1,0 +1,23 @@
+NOD COLLECTION --
+
+db.mp_payments_nod.aggregate([
+  {
+    $addFields: {
+      "payment_reference_no": "$utr",
+      "net_paid_by_mp": "$settlement_amount",
+      "payment_date": "$settlement_date",
+      "main_order_number": "$settlement_description",
+      "sub_order_number": "$invoice_ref"
+ }
+  }, 
+  {
+    $project: {
+      "_id": 0, 
+      "payment_reference_no": 1,
+      "net_paid_by_mp": 1,
+      "payment_date": 1,
+      "main_order_number": 1,
+      "sub_order_number": 1
+    }
+  }
+])
