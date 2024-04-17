@@ -1,0 +1,367 @@
+NEW TASKS(FORWARD)--
+
+Create D/B of myntra_sap and make collection of myntra_mp_payments.
+
+1) Find Total_TCS_Amount by summing of three types of amount igst_amount, $cgst_amount, $sgst_amount for myntra_mp_payments collection.
+
+db.myntra_mp_payments.aggregate([
+{
+    $match: { "order_type": "Forward" }
+  },
+  {
+    $addFields: {
+      "total_tcs_amount": { $sum: ["$igst_tcs", "$cgst_tcs", "$sgst_tcs"] } 
+    }
+  }, 
+  {
+    $project: {
+      "_id": 0, 
+      "order_type": 1, 
+      "igst_tcs": 1,
+      "cgst_tcs": 1,
+      "sgst_tcs": 1, 
+      "total_tcs_amount": 1
+    }
+  }
+])
+
+
+2) 
+ Total_GST_On_Fees_Amount = Order_Type = "Forward", From Payment File =
+ a) We have to derive GST value of Commission Fee as it is already inclusive of GST: formula (Commission Fee-Commission Fee/1.18) and  
+ b) (Fixed Fee GST + Payment Gateway Fee GST + Logistic Fee)*18%, Do sum of point a & point b
+
+db.myntra_mp_payments.aggregate([
+  {
+    $match: {
+      order_type: "Forward"
+    }
+  },
+  {
+    $addFields: {
+      Total_GST_On_Fees_Amount: {
+        $sum: [
+          { $subtract: ["$commission", { $divide: ["$commission", 1.18] }] },
+          { $multiply: [{ $sum: ["$fixed_fee", "$payment_gateway_fee", "$total_logistics_deduction"] }, 0.18] }
+        ]
+      }
+    }
+  },
+{
+    $project: {
+      "_id": 0,
+      "order_type": 1,
+      "total_gst_on_fees_amount: 1
+    }
+  }
+
+])
+
+3) Order_Type = "Forward", ( Payment_Date = Settlement_Date/Settled_Date )
+
+db.myntra_mp_payments.aggregate([
+  {
+    $match: {
+      "order_type": "Forward", 
+    }
+  },
+  {
+    $addFields: {
+      "settled_date": "$payment_date"
+    }
+  },
+  {
+    $project: {
+      "_id": 0,
+      "order_type": 1,
+      "payment_date": 1,
+      "settled_date": 1
+    }
+  }
+])
+
+4) Order_Type = "Forward", ( Remove GST from Commission i.e.= Commission/1.18 )
+
+db.myntra_mp_payments.aggregate([
+  {
+    $match: { "order_type": "Forward"}
+  },
+  {
+    $addFields: {
+    "commission_after_gst_removal": { $divide: ["$commission", 1.18] },
+    }
+    },
+     {
+    $project: {
+        "_id": 1,
+        "order_type": 1,
+        "commission_after_gst_removal": 1
+    }
+  }
+])
+
+5) Order_Type = "Forward",Qty will always be single , 
+( If Suborder id is available multiple times against Forward still we have to consider only one Qty for that same Suborder ID )
+
+db.myntra_mp_payments.aggregate([
+  {
+    $match: { "order_type": "Forward"}
+  },
+  {
+    $addFields: {
+        "qty": 1
+    }
+  },
+  {
+      $project: {
+      "_id": 0,
+      "qty":1
+  }
+  }
+  ])
+
+6) Total_Charges_With_Taxes From Payment File :
+a.Order_Type = "Forward", 
+b. ( Commission Fee ) + (Fixed Fee + Payment Gateway Fee + Logistic Fee)*1.18
+( As Commission Fee is available inclusive of GST in payment file we will only add GST amount in Rest Fees except Commission fee )
+
+db.myntra_mp_payments.aggregate([
+  {
+    $match: {
+      "order_type": "Forward"
+    }
+  },
+  {
+    $addFields: {
+      "total_charges_with_taxes": {
+        $add: [
+          "$commission",
+          { $multiply: [
+              { $sum: ["$fixed_fee", "$payment_gateway_fee", "$total_logistics_deduction"] }, 
+              1.18 
+          ]}
+        ]
+      }
+    }
+  },
+  {
+    $project: {
+      "_id": 0,
+      "order_type": 1,
+      "total_charges_with_taxes": 1
+    }
+  }
+])
+
+7) Add a new fields sap_customer_code, store_id and erp_order_id 
+
+db.myntra_mp_payments.aggregate([
+  {
+    $match: {
+      "order_type": "Forward"
+    }
+  },
+  {
+    $addFields: {
+      "sap_customer_code": "1", 
+      "store_id": "1", 
+      "erp_order_id": "1" 
+    }
+  },
+  {
+    $project: {
+      "_id": 0,
+      "order_type": 1,
+      "sap_customer_code": 1,
+      "store_id": 1,
+      "erp_order_id": 1
+    }
+  }
+])
+
+8) Add a field Original_Invoice_Number We have to use the combination of "orderid" & "lineno" from E-retail to fetch the invoice_no
+and
+Add a field Original_Invoice_Date We have to use the combination of "orderid" & "lineno" from E-retail to fetch the invoiceDate
+where order_type = "Forward"
+
+db.myntra_mp_payments.aggregate([
+  {
+    $match: {
+      "order_type": "Forward"
+    }
+  },
+  {
+    $lookup: {
+      from: "e_retail",
+      let: { orderId: "$order_line_id", lineNo: "$seller_order_id" },
+      pipeline: [
+        {
+          $match: {
+            $expr: {
+              $and: [
+                { $eq: ["$orderid", "$$orderId"] },
+                { $eq: ["$lineno", "$$lineNo"] }
+              ]
+            }
+          }
+        },
+        {
+          $project: {
+            "_id": 0,
+            "original_invoice_number": "$invoice_no",
+            "original_invoice_date": "$invoice_date" 
+          }
+        }
+      ],
+      as: "invoice"
+    }
+  },
+  {
+    $addFields: {
+      "eretail_original_invoice_number": {
+        $concat: [
+          { $toString: "$seller_order_id" }, 
+          { $toString: "$order_line_id" } 
+        ]
+      },
+      "invoice_no": { $arrayElemAt: ["$invoice.original_invoice_number", 0] },
+      "invoice_date": { $arrayElemAt: ["$invoice.original_invoice_date", 0] }
+    }
+  },
+  {
+    $project: {
+      "_id": 0,
+      "order_type": 1,
+      "eretail_original_invoice_number": 1,
+      "eretail_original_invoice_date": 1,
+      "invoice_no": 1,
+      "invoice_date": 1 
+    }
+  }
+])
+      
+FULL CODE--
+
+db.myntra_mp_payments.aggregate([
+  {
+    $match: {
+      "order_type": "Forward"
+    }
+  },
+  {
+    $addFields: {
+      "total_tcs_amount": { $sum: ["$igst_tcs", "$cgst_tcs", "$sgst_tcs"] },
+      "total_gst_on_fees_amount": {
+        $sum: [
+          { $subtract: ["$commission", { $divide: ["$commission", 1.18] }] },
+          { $multiply: [{ $sum: ["$fixed_fee", "$payment_gateway_fee", "$total_logistics_deduction"] }, 0.18] }
+        ]
+      },
+      "settled_date": "$payment_date",
+      "commission_after_gst_removal": { $divide: ["$commission", 1.18] },
+      "qty": 1,
+      "total_charges_with_taxes": {
+        $add: [
+          "$commission",
+          { $multiply: [
+              { $sum: ["$fixed_fee", "$payment_gateway_fee", "$total_logistics_deduction"] }, 
+              1.18 
+          ]}
+        ]
+      },
+      "sap_customer_code": "1", 
+      "store_id": "1", 
+      "erp_order_id": "1" 
+    }
+  },
+  {
+    $lookup: {
+      from: "e_retail",
+      let: { orderId: "$order_line_id", lineNo: "$seller_order_id" },
+      pipeline: [
+        {
+          $match: {
+            $expr: {
+              $and: [
+                { $eq: ["$orderid", "$$orderId"] },
+                { $eq: ["$lineno", "$$lineNo"] }
+              ]
+            }
+          }
+        },
+        {
+          $project: {
+            "_id": 0,
+            "original_invoice_number": "$invoice_no",
+            "original_invoice_date": "$invoice_date" 
+          }
+        }
+      ],
+      as: "invoice"
+    }
+  },
+  {
+    $addFields: {
+      "eretail_original_invoice_number": {
+        $concat: [
+          { $toString: "$seller_order_id" }, 
+          { $toString: "$order_line_id" } 
+        ]
+      },
+      "invoice_no": { $arrayElemAt: ["$invoice.original_invoice_number", 0] },
+      "invoice_date": { $arrayElemAt: ["$invoice.original_invoice_date", 0] }
+    }
+  },
+  {
+    $project: {
+      "_id": 0,
+      "order_type": 1,
+      "neft_ref" :1,
+      "igst_amount" : 1,
+      "cgst_amount" : 1,
+      "sgst_amount" : 1,
+      "mrp": 1,
+      "customer_paid_amt":1,
+      "commission": 1,
+      "payment_type":1,
+      "tds": 1,
+      "total_logistics_deduction": 1,
+      "pick_and_pack_fee": 1,
+      "fixed_fee": 1, 
+      "payment_gateway_fee": 1,
+      "logistics_commission": 1, 
+      "settled_amount": 1,
+      "nod_comment": 1,
+      "store_order_id": 1,
+      "payment_date": 1,
+      "order_line_id": 1,
+      "seller_order_id": 1,
+      "return_id": 1,
+      "order_type": 1,
+      "order_release_id": 1,
+      "packet_id": 1,
+      "seller_id": 1,
+      "taxable_amount": 1,
+      "tax_rate": 1,
+      "seller_discount": 1,
+      "platform_discount": 1,
+      "total_discount": 1,
+      "comments": 1,
+      "igst_tcs": 1,
+      "cgst_tcs": 1,
+      "sgst_tcs": 1,
+      "total_tcs_amount": 1,
+      "total_gst_on_fees_amount": 1,
+      "settled_date": 1,
+      "commission_after_gst_removal": 1,
+      "qty": 1,
+      "total_charges_with_taxes": 1,
+      "sap_customer_code": 1,
+      "store_id": 1,
+      "erp_order_id": 1,
+      "eretail_original_invoice_number": 1,
+      "original_invoice_number": 1,
+      "invoice_date": 1
+    }
+  }
+])
