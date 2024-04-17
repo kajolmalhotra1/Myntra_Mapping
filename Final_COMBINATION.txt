@@ -1,0 +1,232 @@
+db.ritu_kumar_mp_payments.aggregate([
+{
+    $match: {
+      $or: [
+        { "order_type": "Forward" },
+        { "order_type": "Reverse" }
+      ]
+    }
+  },
+{
+    $addFields: {
+      "sap_customer_name": 1,
+      "sap_customer_code": 1, 
+      "store_id": 1, 
+      "erp_order_id": 1,
+      "main_order_number": "$seller_order_id",
+      "sub_order_number": "$order_release_id", 
+      "invoice_no": 1,
+      "invoice_date": 1,
+      "order_type": "$order_type",
+      "qty": 1,
+      "sellingprice_before_discount": "$mrp",
+      "discount_by_seller": "$seller_discount",
+      "discount_by_mp": "$platform_discount",
+      "total_discount": "$total_discount",
+      "payment_reference_no": "$neft_ref",
+      "payment_date": "$payment_date",
+      "settled_date": "$payment_date",
+      "sellingprice_for_receivables": "$customer_paid_amt",
+      "net_paid_by_mp": "$settled_amount",  
+      "commission_fees": {
+        $cond: [
+          { $eq: ["$order_type", "Forward"] },
+          { $multiply: [ { $divide: ["$commission", 1.18] }, -1 ] }, 
+          { $divide: ["$commission", 1.18] } 
+        ]
+      }, 
+      "total_tcs_amount": {
+        $cond: [
+          { $eq: ["$order_type", "Forward"] },
+          { $multiply: [ { $sum: ["$igst_tcs", "$cgst_tcs", "$sgst_tcs"] }, -1 ] },
+          { $sum: ["$igst_tcs", "$cgst_tcs", "$sgst_tcs"] }
+        ]
+      },   
+      "tds_194_O": {
+        $cond: [
+          { $eq: ["$order_type", "Forward"] },
+          { $multiply: [ "$tds", -1 ] }, 
+          0 
+        ]
+      },   
+      "logistic_fees": {
+        $cond: [
+          { $eq: ["$order_type", "Forward"] },
+          { $multiply: [ "$total_logistics_deduction", -1 ] }, // Change sign to negative for "Forward" order_type
+          {
+            $cond: [
+              { $eq: ["$order_type", "Reverse"] },
+              { $multiply: [ "$total_logistics_deduction", -1 ] }, // Change sign to negative for "Reverse" order_type
+              "$total_logistics_deduction" // Keep the original value for other order types
+            ]
+          }
+        ]
+      },
+      "fixed_fees": {
+        $cond: [
+          { $eq: ["$order_type", "Forward"] },
+          { $multiply: [ "$fixed_fee", -1 ] }, 
+          "$fixed_fee" 
+        ]
+      },
+      "collection_fee": {
+        $cond: [
+          { $eq: ["$order_type", "Forward"] },
+          { $multiply: [ "$payment_gateway_fee", -1 ] }, 
+          "$payment_gateway_fee" 
+        ]
+      },
+      "total_refund_amount": "$customer_paid_amt",
+      "refund_total_tcs_amount": { $sum: ["$igst_tcs", "$cgst_tcs", "$sgst_tcs"] },
+      "refund_tds_194_O": "$tds",
+      "total_gst_on_fees_amount": {
+        $switch: {
+          branches: [
+            {
+              case: { $eq: ["$order_type", "Forward"] },
+              then: {
+                $multiply: [
+                  { $sum: [
+                    { $subtract: ["$commission", { $divide: ["$commission", 1.18] }] },
+                    { $multiply: [{ $sum: ["$fixed_fee", "$payment_gateway_fee", "$total_logistics_deduction"] }, 0.18] }
+                  ] },
+                  -1
+                ]
+              }
+            },
+            {
+              case: { $eq: ["$order_type", "Reverse"] },
+              then: {
+                $subtract: [
+                  {
+                    $add: [
+                      {
+                        $subtract: [
+                          "$commission",
+                          { $divide: ["$commission", 1.18] }
+                        ]
+                      },
+                      {
+                        $multiply: [
+                          { $add: ["$fixed_fee", "$payment_gateway_fee"] },
+                          0.18
+                        ]
+                      }
+                    ]
+                  },
+                  { $multiply: ["$total_logistics_deduction", 0.18] }
+                ]
+              }
+            }
+          ],
+          default: null
+        }
+      },
+      "total_charges_with_taxes": {
+        $switch: {
+          branches: [
+            {
+              case: { $eq: ["$order_type", "Forward"] },
+              then: {
+                $multiply: [
+                  { $add: [
+                    "$commission",
+                    { $multiply: [
+                      { $sum: ["$fixed_fee", "$payment_gateway_fee", "$total_logistics_deduction"] },
+                      1.18
+                    ] }
+                  ] },
+                  -1
+                ]
+              }
+            },
+            {
+              case: { $eq: ["$order_type", "Reverse"] },
+              then: {
+                $subtract: [
+                  {
+                    $add: [
+                      "$commission",
+                      {
+                        $multiply: [
+                          { $sum: ["$fixed_fee", "$payment_gateway_fee"] },
+                          1.18
+                        ]
+                      }
+                    ]
+                  },
+                  { $multiply: ["$total_logistics_deduction", 1.18] }
+                ]
+              }
+            }
+          ],
+          default: null
+        }
+      }
+    }
+  }, 
+  {
+    $match: {
+      $or: [
+        { "total_gst_on_fees_amount": { $ne: null } },
+        { "total_charges_with_taxes": { $ne: null } }
+      ]
+    }
+  }, 
+  {
+    $project: {
+      "_id": 0,
+      "sap_customer_name": 1,
+      "sap_customer_code": 1,
+      "store_id": 1,
+      "erp_order_id": 1,
+      "main_order_number": 1,
+      "sub_order_number": 1,
+      "invoice_no": 1,
+      "invoice_date":1,
+      "order_type": 1,
+      "qty": 1,
+      "sellingprice_before_discount": 1,
+      "discount_by_seller": 1,
+      "discount_by_mp": 1,
+      "total_discount": 1,
+      "payment_reference_no": 1,
+      "payment_date": 1,
+      "settled_date": 1,
+      "sellingprice_for_receivables": { $cond: [{ $eq: ["$order_type", "Forward"] }, "$customer_paid_amt", 0] },
+      "commission_fees": 1,
+      "total_tcs_amount": {
+      $cond: [
+        { $eq: ["$order_type", "Forward"] },
+        { $multiply: [ { $sum: ["$igst_tcs", "$cgst_tcs", "$sgst_tcs"] }, -1 ] }, 
+        0 
+      ]
+    },
+     "tds_194_O": {
+      $cond: [
+        { $eq: ["$order_type", "Forward"] },
+        { $multiply: [ "$tds", -1 ] }, 
+        0
+      ]
+    },
+      "logistic_fees": 1,
+      "fixed_fees": 1,
+      "collection_fee": 1,
+      "total_refund_amount": {
+      $cond: [
+        { $eq: ["$order_type", "Reverse"] },
+        { $multiply: [ "$customer_paid_amt", -1 ] }, 
+        0 
+      ]
+    },
+      "refund_total_tcs_amount": { $cond: [{ $eq: ["$order_type", "Reverse"] }, { $sum: ["$igst_tcs", "$cgst_tcs", "$sgst_tcs"] }, 0] },
+      "refund_tds_194_O": { $cond: [{ $eq: ["$order_type", "Reverse"] }, "$tds", 0] },
+      "total_gst_on_fees_amount": 1,
+      "total_charges_with_taxes": 1,
+      "net_paid_by_mp": 1
+    }
+  },
+  {
+    $out: "new_sap_payment_file"
+  }
+])
